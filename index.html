@@ -59,6 +59,15 @@ button.mark:hover, button.mark[aria-expanded="true"] { box-shadow: 0 0 0 3px var
 .pmwrap { position: relative; flex: 0 0 auto; }
 .pagemenu { position: absolute; top: calc(100% + 8px); left: 0; z-index: 35; min-width: 240px; max-width: min(320px, calc(100vw - 32px)); background: var(--sheet); border: 1px solid var(--line-2); border-radius: var(--r); box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .kwrap { position: relative; }
+.syncb { position: relative; }
+.syncb .sdot { position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); box-shadow: 0 0 0 2px var(--sheet); }
+.syncb .sdot.ok { background: var(--good); } .syncb .sdot.bad { background: var(--bad); } .syncb .sdot.busy { background: var(--accent); }
+.syncb.spin svg { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
+.btn.syncb[data-state=perm], .btn.syncb[data-state=err] { background: var(--bad); border-color: var(--bad); color: #fff; } .syncb[data-state=perm] .sdot, .syncb[data-state=err] .sdot { display: none; }
+@media (max-width: 1440px) { .syncb .sl { display: none; } .syncb[data-state=perm] .sl, .syncb[data-state=err] .sl { display: inline; } }
+.synckv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; } .synckv dt { color: var(--ink-3); } .synckv dd { margin: 0; overflow-wrap: anywhere; }
+.syncf { display: flex; flex-direction: column; gap: 10px; } .syncf .f { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; } .syncf .field { width: 100%; font-weight: 400; }
+.syncerr { color: var(--bad); font-size: 13px; } code.k { font-family: var(--f-mono, monospace); font-size: 12px; background: var(--paper); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .kebab { font-size: 20px; line-height: 1; padding: 6px 12px; }
 .kebab[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
 .appmenu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 35; min-width: 230px; background: var(--sheet); border: 1px solid var(--line-2); border-radius: var(--r); box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
@@ -372,6 +381,7 @@ ul.acts li.done span { text-decoration: line-through; color: var(--ink-3); }
     <div id="punch" class="punch" data-form="punch" aria-label="Punch clock"></div>
     <button class="btn ghost" type="button" id="bk-btn" data-a="backup" title="Save a copy of this account as an Excel file">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Back up</button>
+    <button class="btn ghost syncb" type="button" id="sync-btn" data-a="sync-open" title="Sync with Dropbox" hidden><span class="sdot" id="sync-dot"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg><span class="sl" id="sync-t">Sync</span></button>
     <div class="kwrap" id="kwrap"><button class="btn ghost kebab" type="button" id="menu-btn" data-a="app-menu" aria-haspopup="menu" aria-expanded="false" aria-label="App menu" title="More">⋮</button><div class="appmenu" id="appmenu" role="menu" hidden></div></div>
     <input type="file" id="import-pick" accept=".json,application/json" hidden>
   </header>
@@ -786,39 +796,47 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 <div id="lj-status" class="lj-status">Starting…</div>
 <style>.lj-status{position:fixed;left:16px;bottom:14px;z-index:50;font-size:12px;color:var(--ink-3);background:var(--sheet);border:1px solid var(--line);border-radius:999px;padding:3px 10px}.lj-status.ok{color:var(--good)}.lj-status.bad{color:var(--bad);border-color:var(--bad)}</style>
 <script>
-/* My Jobs — offline runtime. Everything is kept in this browser (IndexedDB) on this device; no Claude, no internet needed. */
+/* My Jobs — offline runtime with optional Dropbox sync.
+   Data lives in this browser (IndexedDB). When Sync is connected, a shared data file in Dropbox keeps every device up to date,
+   and invoices, backups and job folders are saved straight into Dropbox.
+   Two ways to reach Dropbox, both using the same data file (Dropbox › part time › My Jobs › My Jobs data.json):
+   - "folder": the Dropbox folder on this computer (Chrome/Edge), carried between computers by the Dropbox app. No sign-in setup.
+   - "api":    signing in to Dropbox with an app key (for phones and other browsers). */
 window.MYJOBS_STANDALONE = true;
 (function () {
   "use strict";
-  var DBNAME = "myjobs-offline", tree = { collections: {} }, listeners = [], imgUrls = {}, saveTimer = null, pending = false;
+  var DBNAME = "myjobs-offline", tree = { collections: {}, meta: {} }, listeners = [], imgUrls = {}, imgTypes = {}, saveTimer = null, pending = false;
   function openDb() { return new Promise(function (res, rej) { var r = indexedDB.open(DBNAME, 1); r.onupgradeneeded = function () { r.result.createObjectStore("kv"); r.result.createObjectStore("images"); }; r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); }; }); }
-  function tx(store, mode, fn) { return openDb().then(function (d) { return new Promise(function (res, rej) { var t = d.transaction(store, mode), s = t.objectStore(store), out = fn(s); t.oncomplete = function () { res(out && out.result !== undefined ? out.result : out); }; t.onerror = function () { rej(t.error); }; }); }); }
+  function tx(store, mode, fn) { return openDb().then(function (d) { return new Promise(function (res, rej) { var t = d.transaction(store, mode), s = t.objectStore(store), out = fn(s); t.oncomplete = function () { res(out && out.result !== undefined ? out.result : undefined); }; t.onerror = function () { rej(t.error); }; }); }); }
   function getAll(store) { return openDb().then(function (d) { return new Promise(function (res) { var t = d.transaction(store), s = t.objectStore(store), keys = s.getAllKeys(), vals = s.getAll(); t.oncomplete = function () { var o = {}; keys.result.forEach(function (k, i) { o[k] = vals.result[i]; }); res(o); }; t.onerror = function () { res({}); }; }); }); }
+  function kvPut(k, v) { return tx("kv", "readwrite", function (s) { return s.put(v, k); }); }
 
   function status(t, kind) { var s = document.getElementById("lj-status"); if (s) { s.textContent = t; s.className = "lj-status" + (kind ? " " + kind : ""); } }
+  function hhmm(d) { return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+  function persistLocal() { return kvPut("tree", JSON.parse(JSON.stringify(tree))); }
   function save() { pending = true; status("Saving…"); clearTimeout(saveTimer); saveTimer = setTimeout(function () {
-    tx("kv", "readwrite", function (s) { return s.put(JSON.parse(JSON.stringify(tree)), "tree"); }).then(function () {
-      pending = false; var n = new Date(); status("Saved on this device " + String(n.getHours()).padStart(2, "0") + ":" + String(n.getMinutes()).padStart(2, "0"), "ok");
-    }, function () { status("Not saved – retrying", "bad"); setTimeout(save, 3000); });
+    persistLocal().then(function () { pending = false; if (!live() && DBX.state !== "perm") status("Saved on this device " + hhmm(new Date()), "ok"); }, function () { status("Not saved – retrying", "bad"); setTimeout(save, 3000); });
   }, 250); }
-  window.addEventListener("beforeunload", function (e) { if (pending) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("beforeunload", function (e) { if (pending || (live() && localDirty)) { e.preventDefault(); e.returnValue = ""; } });
 
-  /* ---- database stand-in (same calls the online page uses) ---- */
+  /* ---- database stand-in (same calls the online page uses); every change is time-stamped so devices can merge ---- */
   function segs(p) { return String(p || "").split("/").filter(Boolean); }
-  function err(code) { var e = new Error(code); e.code = code; return e; }
+  function err(code, msg) { var e = new Error(code + (msg ? ": " + msg : "")); e.code = code; return e; }
   function col(c) { return tree.collections[c] || (tree.collections[c] = {}); }
   function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+  var localDirty = false, writeCount = 0;
+  function mark(c, id, del) { tree.meta = tree.meta || {}; tree.meta[c + "|" + id] = del ? { t: Date.now(), d: 1 } : { t: Date.now() }; localDirty = true; writeCount++; }
   function snapDoc(c, id) { var v = (tree.collections[c] || {})[id]; return { id: id, exists: v !== undefined, data: function () { return clone(v); }, metadata: { fromCache: false, hasPendingWrites: false } }; }
   function qsnap(c) { var docs = Object.keys(tree.collections[c] || {}).sort().map(function (id) { return snapDoc(c, id); }); return { docs: docs, size: docs.length, empty: !docs.length, docChanges: function () { return []; }, metadata: { fromCache: false } }; }
   function notify() { listeners.slice().forEach(function (l) { try { l(); } catch (e) { console.error(e); } }); }
-  function changed() { save(); setTimeout(notify, 0); }
+  function changed() { save(); setTimeout(notify, 0); if (live()) queueSync(folderMode() ? 800 : 1200); }
   function listen(fn) { listeners.push(fn); setTimeout(fn, 0); return function () { var i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); }; }
   function docRef(c, id) {
     return { id: id, path: c + "/" + id,
       get: async function () { return snapDoc(c, id); },
-      set: async function (d) { col(c)[id] = clone(d); changed(); },
-      update: async function (d) { var cur = col(c)[id]; if (cur === undefined) throw err("invalid_argument"); col(c)[id] = Object.assign({}, cur, clone(d)); changed(); },
-      delete: async function () { if (tree.collections[c]) delete tree.collections[c][id]; changed(); },
+      set: async function (d) { col(c)[id] = clone(d); mark(c, id); changed(); },
+      update: async function (d) { var cur = col(c)[id]; if (cur === undefined) throw err("invalid_argument"); col(c)[id] = Object.assign({}, cur, clone(d)); mark(c, id); changed(); },
+      delete: async function () { if (tree.collections[c]) delete tree.collections[c][id]; mark(c, id, true); changed(); },
       onSnapshot: function (next) { var last = null; return listen(function () { var s = snapDoc(c, id), k = JSON.stringify(s.data() === undefined ? null : s.data()); if (k === last) return; last = k; next(s); }); },
       collection: function (sub) { return colRef(c + "/" + id + "/" + sub); } };
   }
@@ -833,15 +851,268 @@ window.MYJOBS_STANDALONE = true;
   }
   var db = { collection: colRef, doc: function (p) { var a = segs(p), id = a.pop(); return docRef(a.join("/"), id); } };
 
+  /* ================= Dropbox ================= */
+  var DEFAULT_PATH = "/part time/My Jobs/My Jobs data.json";
+  var DBX = { key: "", access: "", refresh: "", exp: 0, path: DEFAULT_PATH, rev: "", on: false, last: 0, err: "", state: "off", account: "", mode: "" };
+  var FS = { dir: null, held: null, label: "" }; /* dir = this computer's Dropbox › part time folder, once allowed */
+  var fsSupported = typeof window.showDirectoryPicker === "function";
+  function folderMode() { return DBX.mode === "folder"; }
+  function live() { return DBX.on && (!folderMode() || !!FS.dir); }
+  var canRedirect = /^https?:$/.test(location.protocol);
+  function redirectUri() { return location.origin + location.pathname; }
+  function saveDbx() { var o = {}; ["key", "access", "refresh", "exp", "path", "rev", "on", "last", "account", "mode"].forEach(function (k) { o[k] = DBX[k]; }); return kvPut("dbx", o); }
+  function setState(s, e) { DBX.state = s; if (e !== undefined) DBX.err = e; if (s === "ok") status("Synced with Dropbox " + hhmm(new Date(DBX.last || Date.now())), "ok"); else if (s === "syncing") status("Syncing…"); else if (s === "perm") status("Press Reconnect Dropbox at the top to keep this computer in sync", "bad"); else if (s === "err") status("Sync problem – " + (DBX.err || "try again"), "bad"); window.dispatchEvent(new Event("dbx")); }
+  function hdrJson(o) { return JSON.stringify(o).replace(/[\u007f-￿]/g, function (c) { return "\\u" + ("000" + c.charCodeAt(0).toString(16)).slice(-4); }); }
+  async function token() {
+    if (DBX.access && Date.now() < DBX.exp - 60000) return DBX.access;
+    if (!DBX.refresh) throw err("not_connected", "Dropbox is not connected");
+    var r = await fetch("https://api.dropboxapi.com/oauth2/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: DBX.refresh, client_id: DBX.key }) });
+    if (!r.ok) { var e = err("auth", "Dropbox sign-in expired. Connect again."); e.status = r.status; throw e; }
+    var j = await r.json(); DBX.access = j.access_token; DBX.exp = Date.now() + (j.expires_in || 14400) * 1000; saveDbx(); return DBX.access;
+  }
+  async function fail(r) { var txt = await r.text(), j = {}; try { j = JSON.parse(txt); } catch (e) {} var e = err(r.status === 409 ? "conflict" : "http_" + r.status, j.error_summary || txt.slice(0, 120)); e.status = r.status; e.summary = j.error_summary || ""; return e; }
+  async function rpc(ep, args) {
+    var t = await token();
+    var r = await fetch("https://api.dropboxapi.com/2/" + ep, { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(args) });
+    if (!r.ok) throw await fail(r); return r.json();
+  }
+  async function download(path) {
+    var t = await token();
+    var r = await fetch("https://content.dropboxapi.com/2/files/download", { method: "POST", headers: { Authorization: "Bearer " + t, "Dropbox-API-Arg": hdrJson({ path: path }) } });
+    if (r.status === 409) { var e = await fail(r); e.code = "not_found"; throw e; }
+    if (!r.ok) throw await fail(r);
+    var meta = {}; try { meta = JSON.parse(r.headers.get("Dropbox-API-Result") || "{}"); } catch (x) {}
+    return { blob: await r.blob(), meta: meta };
+  }
+  async function upload(path, data, mode) {
+    var t = await token();
+    var r = await fetch("https://content.dropboxapi.com/2/files/upload", { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/octet-stream", "Dropbox-API-Arg": hdrJson({ path: path, mode: mode, autorename: false, mute: true }) }, body: data });
+    if (!r.ok) throw await fail(r); return r.json();
+  }
+  async function ensureFolder(path) { var a = segs(path), p = ""; for (var i = 0; i < a.length; i++) { p += "/" + a[i]; try { await rpc("files/create_folder_v2", { path: p, autorename: false }); } catch (e) { if (e.status !== 409) throw e; } } }
+  function dataDir() { var a = segs(DBX.path); a.pop(); return "/" + a.join("/"); }
+
+  /* ---- the Dropbox folder on this computer ---- */
+  function isNF(e) { return e && (e.name === "NotFoundError" || e.name === "TypeMismatchError"); }
+  function nf(what) { var e = err("not_found", what); e.status = 409; e.summary = "path/not_found/"; return e; }
+  function exists409(what) { var e = err("ALREADY_EXISTS", what); e.status = 409; e.summary = "path/conflict/"; return e; }
+  function relParts(path) { var a = segs(path); if (!a.length || a[0].toLowerCase() !== "part time") throw err("outside", "Only folders inside Dropbox › part time can be reached"); return a.slice(1); }
+  async function fsDir(parts, create) { var d = FS.dir; if (!d) throw err("not_connected", "The Dropbox folder is not connected"); for (var i = 0; i < parts.length; i++) { try { d = await d.getDirectoryHandle(parts[i], { create: !!create }); } catch (e) { if (isNF(e)) throw nf(parts.slice(0, i + 1).join("/")); throw e; } } return d; }
+  async function fsFileH(path, create) { var a = relParts(path), n = a.pop(), d = await fsDir(a, create); try { return await d.getFileHandle(n, { create: !!create }); } catch (e) { if (isNF(e)) throw nf(path); throw e; } }
+  async function fsHas(path) { var a = relParts(path), n = a.pop(), d; try { d = await fsDir(a); } catch (e) { if (e.code === "not_found") return false; throw e; }
+    try { await d.getFileHandle(n); return true; } catch (e) { if (!isNF(e)) throw e; } try { await d.getDirectoryHandle(n); return true; } catch (e) { if (!isNF(e)) throw e; } return false; }
+  function fsRev(f) { return f.lastModified + ":" + f.size; }
+  async function fsPut(fh, data) { var w = await fh.createWritable(); await w.write(data); await w.close(); }
+  async function fsWalk(d, base, rec, out) { for await (var ent of d.values()) { var p = base + "/" + ent.name; out.push({ name: ent.name, object_type: ent.kind === "directory" ? "folder" : "file", path_display: p }); if (rec && ent.kind === "directory") await fsWalk(ent, p, rec, out); } return out; }
+
+  /* One set of storage calls for both ways of reaching Dropbox. */
+  var B = {
+    stat: async function (path) {
+      if (folderMode()) { try { return fsRev(await (await fsFileH(path)).getFile()); } catch (e) { if (e.code === "not_found") return null; throw e; } }
+      try { return (await rpc("files/get_metadata", { path: path })).rev; } catch (e) { if (e.status === 409) return null; throw e; }
+    },
+    read: async function (path) {
+      if (folderMode()) { var f = await (await fsFileH(path)).getFile(); return { text: await f.text(), rev: fsRev(f), modified: new Date(f.lastModified).toISOString() }; }
+      var d = await download(path); return { text: await d.blob.text(), rev: d.meta.rev || (await rpc("files/get_metadata", { path: path })).rev, modified: d.meta.server_modified || "" };
+    },
+    write: async function (path, blob, rev) { /* rev: the version we merged with, or null when the file should not exist yet */
+      if (folderMode()) { var cur = await B.stat(path); if ((cur || "") !== (rev || "")) { var c = err("conflict", "changed meanwhile"); c.status = 409; throw c; } var fh = await fsFileH(path, true); await fsPut(fh, blob); return fsRev(await fh.getFile()); }
+      return (await upload(path, blob, rev ? { ".tag": "update", update: rev } : "add")).rev;
+    },
+    ensure: async function (dir) { if (folderMode()) { await fsDir(relParts(dir), true); return; } await ensureFolder(dir); },
+    names: async function (dir) { /* file names in a folder, {} when it doesn't exist */
+      var out = [];
+      if (folderMode()) { var d; try { d = await fsDir(relParts(dir)); } catch (e) { if (e.code === "not_found") return out; throw e; } for await (var ent of d.values()) if (ent.kind === "file") out.push(ent.name); return out; }
+      try { var j = await rpc("files/list_folder", { path: dir, recursive: false }); for (;;) { (j.entries || []).forEach(function (x) { if (x[".tag"] === "file") out.push(x.name); }); if (!j.has_more) break; j = await rpc("files/list_folder/continue", { cursor: j.cursor }); } }
+      catch (e) { if (e.status !== 409) throw e; }
+      return out;
+    },
+    blob: async function (path) { if (folderMode()) return await (await fsFileH(path)).getFile(); return (await download(path)).blob; },
+    add: async function (path, blob) { /* new file only; ALREADY_EXISTS when the name is taken */
+      if (folderMode()) { if (await fsHas(path)) throw exists409(path); await fsPut(await fsFileH(path, true), blob); return; }
+      try { await upload(path, blob, "add"); } catch (e) { if (e.status === 409) throw exists409(e.summary); throw e; }
+    }
+  };
+
+  /* The Dropbox actions the online page uses (job folders, backups, invoice folders), done in the Dropbox folder on this computer. */
+  var fsTools = { callTool: async function (server, tool, a) {
+    a = a || {};
+    if (tool === "create_folder") { var parts = relParts(a.path), name = parts.pop(), d = await fsDir(parts, true); try { await d.getDirectoryHandle(name); throw exists409(a.path); } catch (e) { if (!isNF(e)) throw e; } await d.getDirectoryHandle(name, { create: true }); return { payload: {} }; }
+    if (tool === "create_file") { await B.add(a.path, new Blob([a.content || ""])); return { payload: {} }; }
+    if (tool === "list_folder") { if (a.cursor) return { payload: { entries: [], has_more: false, cursor: "" } }; var dd = await fsDir(relParts(a.path || "")), ents = await fsWalk(dd, String(a.path || "").replace(/\/+$/, ""), a.recursive !== false, []);
+      if (a.object_types) ents = ents.filter(function (x) { return a.object_types.indexOf(x.object_type) >= 0; }); return { payload: { entries: ents, has_more: false, cursor: "" } }; }
+    if (tool === "delete") { for (var i = 0; i < (a.entries || []).length; i++) { var pp = relParts(a.entries[i].source_path), nn = pp.pop(), pd = await fsDir(pp); await pd.removeEntry(nn, { recursive: true }); } return { payload: {} }; }
+    throw err("tool_error", tool);
+  } };
+
+  /* Same Dropbox actions the online page uses (job folders, backups, invoice folders), here done through the Dropbox API. */
+  var dbxTools = { callTool: async function (server, tool, a) {
+    a = a || {};
+    if (tool === "create_folder") { try { await rpc("files/create_folder_v2", { path: a.path, autorename: false }); return { payload: {} }; } catch (e) { if (e.status === 409) { if (/conflict/.test(e.summary)) throw err("ALREADY_EXISTS", e.summary); var pa = segs(a.path); pa.pop(); await ensureFolder("/" + pa.join("/")); await rpc("files/create_folder_v2", { path: a.path, autorename: false }); return { payload: {} }; } throw e; } }
+    if (tool === "create_file") { try { await upload(a.path, new Blob([a.content || ""]), "add"); return { payload: {} }; } catch (e) { if (e.status === 409) throw err("ALREADY_EXISTS", e.summary); throw e; } }
+    if (tool === "list_folder") {
+      var j; try { j = a.cursor ? await rpc("files/list_folder/continue", { cursor: a.cursor }) : await rpc("files/list_folder", { path: a.path || "", recursive: a.recursive !== false }); } catch (e) { if (e.status === 409) throw err("not_found", e.summary); throw e; }
+      var ents = (j.entries || []).filter(function (x) { return x[".tag"] !== "deleted"; }).map(function (x) { return { name: x.name, object_type: x[".tag"] === "folder" ? "folder" : "file", path_display: x.path_display }; });
+      if (a.object_types) ents = ents.filter(function (x) { return a.object_types.indexOf(x.object_type) >= 0; });
+      return { payload: { entries: ents, has_more: !!j.has_more, cursor: j.has_more ? j.cursor : "" } };
+    }
+    if (tool === "delete") { for (var i = 0; i < (a.entries || []).length; i++) await rpc("files/delete_v2", { path: a.entries[i].source_path }); return { payload: {} }; }
+    throw err("tool_error", tool);
+  } };
+  window.__dbxPdf = async function (path, data) { await B.add(path, new Blob([data], { type: "application/pdf" })); };
+
+  /* ---- merging: for every record keep the newest change; deletions travel as time-stamped markers ---- */
+  function merge(R) {
+    var Lc = tree.collections || {}, Lm = tree.meta || {}, Rc = R.collections || {}, Rm = R.meta || {}, keys = {};
+    function add(c, m) { Object.keys(c).forEach(function (cl) { Object.keys(c[cl] || {}).forEach(function (id) { keys[cl + "|" + id] = 1; }); }); Object.keys(m).forEach(function (k) { keys[k] = 1; }); }
+    add(Lc, Lm); add(Rc, Rm);
+    var oc = {}, om = {}, chL = false, chR = false;
+    Object.keys(keys).forEach(function (k) {
+      var i = k.indexOf("|"), cl = k.slice(0, i), id = k.slice(i + 1), lm = Lm[k] || { t: 0 }, rm = Rm[k] || { t: 0 };
+      var lv = (Lc[cl] || {})[id], rv = (Rc[cl] || {})[id];
+      var useR = rm.t > lm.t || (rm.t === lm.t && lv === undefined && !lm.d && rv !== undefined);
+      var m = useR ? rm : lm, v = useR ? rv : lv, del = useR ? (!!rm.d || rv === undefined) : (!!lm.d || lv === undefined);
+      if (m.t) om[k] = m;
+      if (!del) (oc[cl] = oc[cl] || {})[id] = v;
+      var fv = JSON.stringify(del ? null : v);
+      if (fv !== JSON.stringify(lv === undefined ? null : lv)) chL = true;
+      if (fv !== JSON.stringify(rv === undefined ? null : rv) || JSON.stringify(m.t ? m : null) !== JSON.stringify(Rm[k] || null)) chR = true;
+    });
+    tree.collections = oc; tree.meta = om;
+    return { local: chL, remote: chR };
+  }
+  /* "w" is a random tag of random length, so two saves never look alike by date and size alone */
+  function body() { var w = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2, 2 + Math.floor(Math.random() * 10)); return new Blob([JSON.stringify({ format: "my-jobs-sync", version: 1, savedAt: new Date().toISOString(), w: w, collections: tree.collections, meta: tree.meta })], { type: "application/json" }); }
+
+  var syncing = false, again = false, syncTimer = null, imgTick = 0, fullTick = 0, lastPoll = 0;
+  function queueSync(ms) { clearTimeout(syncTimer); syncTimer = setTimeout(function () { syncNow(); }, ms || 0); }
+  async function syncNow() {
+    if (!live()) return;
+    if (syncing) { again = true; return; }
+    syncing = true; setState("syncing");
+    try {
+      if (!localDirty && DBX.rev) {
+        var cur = await B.stat(DBX.path);
+        /* the folder's version is its date and size; every 4th check reads the whole file anyway, in case two computers saved in the same instant */
+        if (cur === DBX.rev && !(folderMode() && ++fullTick % 4 === 0)) { DBX.last = Date.now(); saveDbx(); setState("ok", ""); if (!folderMode() || ++imgTick % 8 === 0) await syncImages(); return; }
+      }
+      for (var attempt = 0; attempt < 5; attempt++) {
+        var R = null, rev = "", wc = writeCount;
+        try { var d = await B.read(DBX.path); R = d.text.trim() ? JSON.parse(d.text) : null; rev = d.rev; if (!R && folderMode()) throw err("busy", "the data file is being updated by Dropbox, trying again shortly"); }
+        catch (e) { if (e.code !== "not_found") throw e; }
+        var res = R ? merge(R) : { local: false, remote: true };
+        if (res.local) { await persistLocal(); notify(); }
+        if (!res.remote) { DBX.rev = rev; if (writeCount === wc) localDirty = false; break; }
+        try { DBX.rev = await B.write(DBX.path, body(), rev || null); if (writeCount === wc) localDirty = false; break; }
+        catch (e2) { if (e2.status === 409 && attempt < 4) continue; throw e2; }
+      }
+      DBX.last = Date.now(); saveDbx(); setState("ok", "");
+      await syncImages();
+    } catch (e) { console.error(e); setState("err", e.code === "auth" ? "sign-in expired, open Sync to reconnect" : e.code === "not_connected" ? "not connected" : e.name === "NotAllowedError" ? "this computer needs your OK to use the Dropbox folder" : (e.message || String(e)).slice(0, 90)); }
+    finally { syncing = false; if (again) { again = false; queueSync(300); } }
+  }
+  /* Note images: upload the ones only this device has, fetch the ones it is missing. */
+  async function syncImages() {
+    try {
+      var dir = dataDir() + "/images", refs = {};
+      Object.keys(tree.collections).forEach(function (c) { if (!/(^|\/)jobs$/.test(c)) return; Object.values(tree.collections[c]).forEach(function (j) { (j.notes || []).forEach(function (n) { (n.qImgs || []).concat(n.aImgs || [], n.imgs || []).forEach(function (id) { refs[id] = 1; }); }); }); });
+      var remote = {};
+      (await B.names(dir)).forEach(function (n) { var m = /^([0-9a-f]{32})\./.exec(n); if (m) remote[m[1]] = n; });
+      var local = await getAll("images"), got = false;
+      for (var id in local) if (!remote[id] && refs[id]) { await B.ensure(dir); try { await B.add(dir + "/" + id + "." + ((local[id].type || "image/png").split("/")[1].replace("jpeg", "jpg") || "png"), local[id].blob); } catch (e) { if (e.status !== 409) throw e; } }
+      for (var rid in refs) if (!local[rid] && remote[rid]) {
+        var bl = await B.blob(dir + "/" + remote[rid]), ext = remote[rid].split(".").pop().toLowerCase(), type = (bl.type && bl.type !== "application/octet-stream") ? bl.type : "image/" + (ext === "jpg" ? "jpeg" : ext);
+        bl = new Blob([bl], { type: type });
+        await tx("images", "readwrite", function (s) { return s.put({ type: type, blob: bl }, rid); });
+        imgUrls[rid] = URL.createObjectURL(bl); got = true;
+      }
+      if (got) { notifyImages(); }
+    } catch (e) { console.warn("image sync", e); }
+  }
+  function notifyImages() { window.dispatchEvent(new Event("dbx-images")); }
+  /* The Dropbox folder is checked every 4 seconds (cheap: only the file's date is read); signed-in Dropbox every 30 seconds. */
+  setInterval(function () { if (!live() || document.hidden) return; if (folderMode() || Date.now() - lastPoll > 30000) { lastPoll = Date.now(); syncNow(); } }, 4000);
+  document.addEventListener("visibilitychange", function () { if (live() && !document.hidden) queueSync(200); });
+  window.addEventListener("online", function () { if (live()) queueSync(200); });
+
+  /* ---- connecting ---- */
+  function b64url(buf) { var s = btoa(String.fromCharCode.apply(null, new Uint8Array(buf))); return s.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+  async function pkce() {
+    var a = new Uint8Array(48); crypto.getRandomValues(a); var v = b64url(a.buffer);
+    try { return { v: v, c: b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v))), m: "S256" }; } catch (e) { return { v: v, c: v, m: "plain" }; }
+  }
+  async function keepFolder() { if (folderMode() && FS.dir) { FS.held = FS.dir; try { await kvPut("fsdir", { h: FS.dir, label: FS.label }); } catch (e) {} } }
+  var api = {
+    state: function () { return { on: DBX.on, live: live(), mode: DBX.mode || "", folderOk: fsSupported, folder: FS.label, picked: !!FS.dir, key: DBX.key, path: DBX.path, last: DBX.last, err: DBX.err, status: DBX.state, authed: !!DBX.refresh, canRedirect: canRedirect, account: DBX.account, redirect: canRedirect ? redirectUri() : "" }; },
+    /* Dropbox folder on this computer: pick Dropbox › part time (call straight from a click) */
+    pickFolder: async function () {
+      if (!fsSupported) throw err("unsupported", "This browser can't use the Dropbox folder. Use Chrome or Microsoft Edge on a computer.");
+      var h = await window.showDirectoryPicker({ id: "myjobs-dropbox", mode: "readwrite", startIn: "documents" }), root = null;
+      if (h.name.toLowerCase() === "part time") root = h;
+      else { for await (var ent of h.values()) if (ent.kind === "directory" && ent.name.toLowerCase() === "part time") { root = ent; break; } }
+      if (!root) { for await (var e2 of h.values()) if (e2.kind === "directory" && /^dropbox/i.test(e2.name)) { for await (var e3 of e2.values()) if (e3.kind === "directory" && e3.name.toLowerCase() === "part time") { root = e3; break; } } }
+      if (!root) throw err("wrong_folder", "That folder has no \"part time\" folder in it. Pick your Dropbox folder, or the \"part time\" folder inside it.");
+      if ((await root.queryPermission({ mode: "readwrite" })) !== "granted" && (await root.requestPermission({ mode: "readwrite" })) !== "granted") throw err("denied", "My Jobs was not allowed to use that folder.");
+      FS.dir = root; FS.label = (h === root ? "" : h.name + " › ") + root.name; DBX.mode = "folder"; DBX.on = false; await saveDbx();
+      return api.probe();
+    },
+    reconnect: async function () { /* after a browser restart the browser asks again; call straight from a click */
+      var h = FS.held; if (!h) throw err("not_connected", "Connect the Dropbox folder again from Sync");
+      var ok = (await h.requestPermission({ mode: "readwrite" })) === "granted";
+      if (!ok) { setState("perm", "Access to the Dropbox folder was not allowed."); return false; }
+      FS.dir = h; setState("syncing"); await syncNow(); return true;
+    },
+    startAuth: async function (key, path) {
+      key = String(key || "").trim(); if (!key) throw err("no_key", "Enter your Dropbox app key");
+      DBX.key = key; DBX.mode = "api"; FS.dir = null; if (path) DBX.path = path; await saveDbx();
+      var p = await pkce(); await kvPut("pkce", { v: p.v, key: key });
+      var q = { client_id: key, response_type: "code", code_challenge: p.c, code_challenge_method: p.m, token_access_type: "offline", scope: "account_info.read files.metadata.read files.content.read files.content.write" };
+      if (canRedirect) q.redirect_uri = redirectUri();
+      var url = "https://www.dropbox.com/oauth2/authorize?" + new URLSearchParams(q).toString();
+      if (canRedirect) location.href = url; else window.open(url, "_blank", "noopener");
+      return url;
+    },
+    finishAuth: async function (code) {
+      code = String(code || "").trim(); if (!code) throw err("no_code", "Paste the code Dropbox showed you");
+      var kv = await getAll("kv"), p = kv.pkce; if (!p) throw err("no_pkce", "Press Connect to Dropbox first");
+      var b = { grant_type: "authorization_code", code: code, code_verifier: p.v, client_id: p.key }; if (canRedirect) b.redirect_uri = redirectUri();
+      var r = await fetch("https://api.dropboxapi.com/oauth2/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(b) });
+      if (!r.ok) throw err("auth", "Dropbox did not accept that code. Press Connect to Dropbox and try again.");
+      var j = await r.json(); DBX.mode = "api"; DBX.key = p.key; DBX.access = j.access_token; DBX.refresh = j.refresh_token || DBX.refresh; DBX.exp = Date.now() + (j.expires_in || 14400) * 1000;
+      try { var acc = await rpc("users/get_current_account", null); DBX.account = (acc.name && acc.name.display_name) || acc.email || ""; } catch (e) {}
+      await saveDbx(); await tx("kv", "readwrite", function (s) { return s.delete("pkce"); }); setState("off"); return true;
+    },
+    setPath: async function (p) { p = String(p || "").trim() || DEFAULT_PATH; if (p[0] !== "/") p = "/" + p; if (!/\.json$/i.test(p)) p = p.replace(/\/+$/, "") + "/My Jobs data.json"; DBX.path = p; await saveDbx(); setState(DBX.state); return p; },
+    probe: async function () {
+      try { var d = await B.read(DBX.path), R = null; try { R = JSON.parse(d.text); } catch (x) {} var jobs = R && R.collections && R.collections.jobs ? Object.keys(R.collections.jobs).length : 0; return { exists: true, modified: d.modified, jobs: jobs, ok: !!(R && R.collections) }; }
+      catch (e) { if (e.code === "not_found" || e.status === 409) return { exists: false }; throw e; }
+    },
+    create: async function () {
+      if (await B.stat(DBX.path)) throw err("exists", "There is already a data point there. Connect to it instead.");
+      await B.ensure(dataDir()); DBX.rev = await B.write(DBX.path, body(), null); await keepFolder(); DBX.on = true; localDirty = false; DBX.last = Date.now(); await saveDbx(); setState("ok", ""); syncImages();
+    },
+    connect: async function (mode) {
+      var d = await B.read(DBX.path), R = JSON.parse(d.text);
+      if (!R || typeof R.collections !== "object") throw err("bad_file", "That file is not a My Jobs data point");
+      if (mode === "replace") { tree = { collections: R.collections || {}, meta: R.meta || {} }; localDirty = false; }
+      else { merge(R); localDirty = true; }
+      await persistLocal(); DBX.rev = d.rev || ""; await keepFolder(); DBX.on = true; await saveDbx(); notify(); await syncNow();
+    },
+    syncNow: function () { return syncNow(); },
+    disconnect: async function () { DBX.on = false; DBX.access = ""; DBX.refresh = ""; DBX.rev = ""; DBX.exp = 0; DBX.mode = ""; FS.dir = null; FS.held = null; FS.label = ""; try { await tx("kv", "readwrite", function (s) { return s.delete("fsdir"); }); } catch (e) {} await saveDbx(); setState("off", ""); }
+  };
+  window.__dbx = api;
+
   /* ---- note images ---- */
   var assets = { upload: async function (file) {
     var id = ""; for (var i = 0; i < 32; i++) id += "0123456789abcdef"[Math.floor(Math.random() * 16)];
     await tx("images", "readwrite", function (s) { return s.put({ type: file.type || "image/png", blob: file }, id); });
-    imgUrls[id] = URL.createObjectURL(file); return { id: id, url: imgUrls[id], sizeBytes: file.size, contentType: file.type };
+    imgUrls[id] = URL.createObjectURL(file); if (live()) queueSync(1500);
+    return { id: id, url: imgUrls[id], sizeBytes: file.size, contentType: file.type };
   } };
   window.__imgSrc = function (id) { return imgUrls[id] || "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="; };
 
-  /* ---- files out: everything goes to the Downloads folder ---- */
+  /* ---- files out: Downloads folder (or Dropbox when connected, decided by the page) ---- */
   var downloads = { save: async function (o) {
     var type = /\.pdf$/i.test(o.filename) ? "application/pdf" : /\.json$/i.test(o.filename) ? "application/json" : /\.xls$/i.test(o.filename) ? "application/vnd.ms-excel" : "application/octet-stream";
     var url = URL.createObjectURL(new Blob([o.data], { type: type })), a = document.createElement("a");
@@ -850,13 +1121,16 @@ window.MYJOBS_STANDALONE = true;
 
   /* ---- import / erase, used by the ⋮ menu ---- */
   window.__importData = async function (j) {
-    var imgs = j.images || {};
-    await tx("images", "readwrite", function (s) { s.clear(); Object.keys(imgs).forEach(function (id) { var bin = Uint8Array.from(atob(imgs[id].b64), function (c) { return c.charCodeAt(0); }); s.put({ type: imgs[id].type, blob: new Blob([bin], { type: imgs[id].type }) }, id); }); });
-    tree = { collections: j.collections || {} };
-    await tx("kv", "readwrite", function (s) { return s.put(tree, "tree"); }); pending = false;
+    var imgs = j.images || {}, now = Date.now(), newC = j.collections || {}, meta = {};
+    Object.keys(tree.collections).forEach(function (c) { Object.keys(tree.collections[c] || {}).forEach(function (id) { if (!(newC[c] && newC[c][id] !== undefined)) meta[c + "|" + id] = { t: now, d: 1 }; }); });
+    Object.keys(newC).forEach(function (c) { Object.keys(newC[c] || {}).forEach(function (id) { meta[c + "|" + id] = { t: now }; }); });
+    await tx("images", "readwrite", function (s) { Object.keys(imgs).forEach(function (id) { var bin = Uint8Array.from(atob(imgs[id].b64), function (c) { return c.charCodeAt(0); }); s.put({ type: imgs[id].type, blob: new Blob([bin], { type: imgs[id].type }) }, id); }); });
+    tree = { collections: newC, meta: meta }; localDirty = true;
+    await persistLocal(); pending = false;
+    if (live()) { try { await syncNow(); } catch (e) {} }
   };
   window.__eraseAll = async function () {
-    pending = false; clearTimeout(saveTimer);
+    pending = false; clearTimeout(saveTimer); DBX.on = false;
     await tx("kv", "readwrite", function (s) { s.clear(); }); await tx("images", "readwrite", function (s) { s.clear(); });
     try { localStorage.clear(); } catch (e) {}
     try { if (window.caches) { var ks = await caches.keys(); await Promise.all(ks.map(function (k) { return caches.delete(k); })); } } catch (e) {}
@@ -866,12 +1140,30 @@ window.MYJOBS_STANDALONE = true;
   /* ---- start ---- */
   var ready = (async function () {
     try {
-      var kv = await getAll("kv"); if (kv.tree && kv.tree.collections) tree = kv.tree;
+      var kv = await getAll("kv");
+      if (kv.tree && kv.tree.collections) { tree = kv.tree; tree.meta = tree.meta || {}; }
+      if (kv.dbx) Object.assign(DBX, kv.dbx);
       var im = await getAll("images"); Object.keys(im).forEach(function (id) { imgUrls[id] = URL.createObjectURL(im[id].blob); });
-      status(Object.keys(tree.collections).length ? "Saved on this device" : "New – import your data from the ⋮ menu", Object.keys(tree.collections).length ? "ok" : "");
+      var qs = new URLSearchParams(location.search), code = qs.get("code");
+      if (code && kv.pkce) {
+        try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) {}
+        try { await api.finishAuth(code); window.__dbxJustAuthed = true; } catch (e) { window.__dbxAuthError = e.message; }
+      }
+      if (DBX.on && folderMode()) {
+        var fd = kv.fsdir; FS.held = fd && fd.h; FS.label = (fd && fd.label) || "";
+        if (!FS.held) { DBX.on = false; DBX.mode = ""; }
+        else { var pst = "prompt"; try { pst = await FS.held.queryPermission({ mode: "readwrite" }); } catch (e) {} if (pst === "granted") FS.dir = FS.held; }
+      }
+      if (DBX.on && !live()) setState("perm");
+      else if (DBX.on) { setState("syncing"); setTimeout(syncNow, 300); }
+      else status(Object.keys(tree.collections).length ? "Saved on this device" : "New – press Sync, or import your data from the ⋮ menu", Object.keys(tree.collections).length ? "ok" : "");
+      setTimeout(function () { window.dispatchEvent(new Event("dbx")); }, 0);
     } catch (e) { status("This browser can't store data", "bad"); }
   })();
-  window.claude = { use: function (name) { return ready.then(function () { return { db: db, assets: assets, downloads: downloads }[name] || null; }); } };
+  window.claude = { use: function (name) { return ready.then(function () {
+    if (name === "mcp") return live() ? (folderMode() ? fsTools : dbxTools) : null;
+    return { db: db, assets: assets, downloads: downloads }[name] || null;
+  }); } };
 })();
 
 </script>
@@ -922,6 +1214,9 @@ var S = {
 };
 var LATE_MS = 4 * 3600000;
 var SA = !!window.MYJOBS_STANDALONE; /* true in the offline app, false on the online page */
+/* offline() = the app with no Dropbox data point; once synced, the app saves to Dropbox like the online page */
+function dbxOn() { try { return !!(SA && window.__dbx && window.__dbx.state().live); } catch (e) { return false; } }
+function offline() { return SA && !dbxOn(); }
 /* Pages: each one is a separate workbook with its own jobs, time, invoices, notes and minutes.
    The Karl Francalanza page keeps the original storage paths (the monthly scheduled tasks read them); every other page lives under pages/<id>/. */
 var KF_PAGE = { id: "kf", name: "Karl Francalanza", prefix: "KF", jobDir: "/part time/Perit Karl Francalanza", billName: "Karl Francalanza", billAddress: "", billVat: "22624817", billPhone: "+356 79093149", billEmail: "karl@francalanzaarchitects.com" };
@@ -1061,7 +1356,7 @@ function renderAll() {
   if (editing()) { deferred = true; renderRail(); return; }
   var a = document.activeElement, fid = a && a.id, s0 = null, s1 = null;
   try { if (a && "selectionStart" in a) { s0 = a.selectionStart; s1 = a.selectionEnd; } } catch (e) {}
-  renderPages(); renderRail(); renderPunch(); renderView(); renderDrawer(); renderAppMenu();
+  renderPages(); renderRail(); renderPunch(); renderView(); renderDrawer(); renderAppMenu(); renderSyncBtn();
   if (fid && document.activeElement !== a) { var n = $(fid); if (n) { n.focus(); try { if (s0 != null) n.setSelectionRange(s0, s1); } catch (e) {} } }
 }
 function renderPages() {
@@ -1094,7 +1389,7 @@ function renderView() {
   var m = $("main"), f = { jobs: viewJobs, time: viewTime, invoices: viewInvoices, notes: viewNotes, minutes: viewMinutes }[S.view];
   m.innerHTML = f();
   if (S.view === "minutes") initRich(m);
-  if (S.view === "invoices" && !SA && !S.invFolders && !S.invFoldersBusy && !S.invFoldersErr && (S.db || S.local)) loadInvFolders();
+  if (S.view === "invoices" && !offline() && !S.invFolders && !S.invFoldersBusy && !S.invFoldersErr && (S.db || S.local)) loadInvFolders();
 }
 function go(v, extra) {
   if (VIEWS.indexOf(v) < 0) v = "jobs";
@@ -1244,7 +1539,7 @@ function addJobForm() {
     inp(F, "desc", "Description", "text", "", "w4", ' maxlength="240" required') +
     inp(F, "locality", "Locality", "text", "", "", ' maxlength="80"') + inp(F, "street", "Street name", "text", "", "w2", ' maxlength="120"') +
     '<label class="f">Status<select class="field" id="addjob-status" name="status">' + ["ongoing", "none", "done"].map(function (k) { return '<option value="' + k + '"' + (dv(F, "status", "ongoing") === k ? " selected" : "") + ">" + LABEL[k] + "</option>"; }).join("") + "</select></label>" +
-    '<div class="row"><span class="hint">Job no. ' + nextJobNo() + (SA ? "" : " · Dropbox folders are made for it") + "</span>" +
+    '<div class="row"><span class="hint">Job no. ' + nextJobNo() + (offline() ? "" : " · Dropbox folders are made for it") + "</span>" +
     '<button class="btn ghost" type="button" data-a="cancel-add-job">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>';
 }
 
@@ -1326,6 +1621,88 @@ async function importFile(file) {
     await window.__importData(j); toast("Imported " + n + " jobs. Reloading…", "ok"); setTimeout(function () { location.reload(); }, 800);
   } catch (e) { toast("That file is not a My Jobs export.", "err"); }
 }
+/* ---- Sync with Dropbox (app only): one shared data file that every device reads and writes ---- */
+var SY = { busy: false, err: "", probe: null, probing: false, phone: false, ask: null };
+function syncHM(t) { return t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; }
+function renderSyncBtn() {
+  var b = $("sync-btn"); if (!b) return; if (!SA || !window.__dbx) { b.hidden = true; return; }
+  var st = window.__dbx.state(); b.hidden = false;
+  var k = !st.on ? "off" : st.status === "perm" ? "perm" : st.status === "err" ? "err" : st.status === "syncing" ? "busy" : "ok";
+  b.dataset.state = k; $("sync-dot").className = "sdot " + ({ ok: "ok", busy: "busy", err: "bad", perm: "bad", off: "" })[k];
+  b.classList.toggle("spin", k === "busy");
+  $("sync-t").textContent = ({ off: "Sync", ok: "Synced", busy: "Synced", err: "Sync problem", perm: "Reconnect" })[k];
+  b.title = k === "off" ? "Sync with Dropbox – not set up" : k === "err" ? "Sync problem: " + (st.err || "") : k === "perm" ? "Press to let this computer use the Dropbox folder again" : "Synced with Dropbox" + (st.last ? " at " + syncHM(st.last) : "");
+}
+function syncWhen(t) { if (!t) return "not yet"; var d = new Date(t); return d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+async function syncProbe() {
+  if (SY.probing) return; SY.probing = true; SY.err = "";
+  try { SY.probe = await window.__dbx.probe(); } catch (e) { SY.err = e.message || "Dropbox could not be reached."; SY.probe = null; }
+  SY.probing = false; schedule();
+}
+var DPATH = function (st) { return "Dropbox › " + esc(st.path.replace(/^\//, "").split("/").join(" › ")); };
+function syncHtml() {
+  var st = window.__dbx ? window.__dbx.state() : null;
+  var h = '<header class="dh"><h3>Sync with Dropbox</h3><button class="btn quiet" type="button" data-a="close-drawer" aria-label="Close">✕</button></header><div class="dbody">';
+  if (!st) return h + '<section class="panel"><div class="muted">Sync is part of the My Jobs app.</div></section></div>';
+  var err = SY.err || (st.status === "err" ? st.err : "") || window.__dbxAuthError || "";
+  if (err) h += '<section class="panel"><div class="syncerr">' + esc(err) + "</div></section>";
+  /* connected */
+  if (st.on) {
+    var fold = st.mode === "folder";
+    h += '<section class="panel"><div class="ph"><h3>' + (st.status === "perm" ? "Reconnect this computer" : "This device is synced") + '</h3></div><dl class="synckv">' +
+      "<dt>Data point</dt><dd>" + DPATH(st) + "</dd>" + "<dt>Through</dt><dd>" + (fold ? "the Dropbox folder on this computer" + (st.folder ? " (" + esc(st.folder) + ")" : "") : "Dropbox sign-in" + (st.account ? " · " + esc(st.account) : "")) + "</dd>" +
+      "<dt>Last synced</dt><dd>" + (st.status === "syncing" ? "Syncing now…" : esc(syncWhen(st.last))) + "</dd></dl>";
+    if (st.status === "perm") h += '<div class="syncerr">The browser needs your OK again to use the Dropbox folder (it asks after a restart). Press <b>Reconnect</b>; if the browser offers it, choose <b>Allow on every visit</b>.</div>';
+    else h += '<div class="muted">Changes made here are saved to the data point straight away. ' + (fold ? "Changes from your other devices appear here within a few seconds of the Dropbox app bringing them over." : "Changes from your other devices appear here within 30 seconds, and whenever the app is opened.") + " Invoices, backups and job folders go straight into your Dropbox, as on the online page.</div>";
+    h += '<div class="frow"><button class="btn ghost' + (S.arm === "sync-off" ? " armed" : "") + '" type="button" data-a="sync-off">' + (S.arm === "sync-off" ? "Tap again to disconnect" : "Disconnect this device") + "</button>" +
+      (st.status === "perm" ? '<button class="btn primary" type="button" data-a="sync-reconnect">Reconnect</button>' : '<button class="btn primary" type="button" data-a="sync-now"' + (st.status === "syncing" ? " disabled" : "") + ">Sync now</button>") + "</div></section>";
+    return h + "</div>";
+  }
+  /* folder picked: create or connect */
+  if (st.mode === "folder" && st.picked) {
+    if (!SY.probe && !SY.probing && !SY.err) setTimeout(syncProbe, 0);
+    h += '<section class="panel"><div class="ph"><h3>' + (SY.ask === "create" ? "Create the data point" : "Connect to the data point") + '</h3></div><dl class="synckv"><dt>Folder</dt><dd>' + esc(st.folder) + "</dd><dt>Data point</dt><dd>" + DPATH(st) + "</dd></dl>";
+    if (SY.probing || (!SY.probe && !SY.err)) h += '<div class="muted">Looking for it…</div>';
+    else if (SY.probe && SY.probe.exists) h += '<div class="muted">The data point is there' + (SY.probe.jobs ? " and holds <b>" + SY.probe.jobs + " jobs</b>" : "") + (SY.probe.modified ? ", last changed " + esc(syncWhen(Date.parse(SY.probe.modified))) : "") + ". This computer will show its data from now on. What is on this computer and not in the data point is replaced, so use <b>Export all data</b> first if you need it, or choose Merge to keep both.</div>" +
+      '<div class="frow"><button class="btn ghost" type="button" data-a="sync-cancel">Cancel</button><button class="btn ghost" type="button" data-a="sync-merge"' + (SY.busy ? " disabled" : "") + '>Merge this computer in</button><button class="btn primary" type="button" data-a="sync-use"' + (SY.busy ? " disabled" : "") + ">Connect</button></div>";
+    else if (SY.probe) h += '<div class="muted">There is no data point there yet. Create it from what is on this computer now (' + S.jobs.length + " jobs), then connect your other computers to it.</div>" +
+      '<div class="frow"><button class="btn ghost" type="button" data-a="sync-cancel">Cancel</button><button class="btn primary" type="button" data-a="sync-create"' + (SY.busy ? " disabled" : "") + ">Create the data point</button></div>";
+    else h += '<div class="frow"><button class="btn ghost" type="button" data-a="sync-cancel">Cancel</button><button class="btn ghost" type="button" data-a="sync-retry">Try again</button></div>';
+    return h + "</section></div>";
+  }
+  /* signed in to Dropbox (phones), not yet connected */
+  if (st.mode === "api" && st.authed) {
+    if (!SY.probe && !SY.probing && !SY.err) setTimeout(syncProbe, 0);
+    h += '<section class="panel"><div class="ph"><h3>Create or connect the data point</h3></div><dl class="synckv">' + (st.account ? "<dt>Signed in</dt><dd>" + esc(st.account) + "</dd>" : "") + "<dt>Data point</dt><dd>" + DPATH(st) + "</dd></dl>";
+    if (SY.probing || (!SY.probe && !SY.err)) h += '<div class="muted">Looking for it in your Dropbox…</div>';
+    else if (SY.probe && SY.probe.exists) h += '<div class="muted">Found the data point' + (SY.probe.jobs ? " with <b>" + SY.probe.jobs + " jobs</b>" : "") + ". This device will show its data; choose Merge to keep what is on this device too.</div>" +
+      '<div class="frow"><button class="btn ghost" type="button" data-a="sync-merge"' + (SY.busy ? " disabled" : "") + '>Merge this device in</button><button class="btn primary" type="button" data-a="sync-use"' + (SY.busy ? " disabled" : "") + ">Connect</button></div>";
+    else if (SY.probe) h += '<div class="muted">There is no data point there yet. Create it from what is on this device.</div><div class="frow"><button class="btn primary" type="button" data-a="sync-create"' + (SY.busy ? " disabled" : "") + ">Create the data point</button></div>";
+    else h += '<div class="frow"><button class="btn ghost" type="button" data-a="sync-retry">Try again</button></div>';
+    h += '<div class="frow"><button class="btn quiet" type="button" data-a="sync-signout">Sign out of Dropbox</button></div></section>';
+    return h + "</div>";
+  }
+  /* not set up */
+  var signIn = '<form class="syncf" data-form="sync" onsubmit="return false">' + inp("sync", "key", "Dropbox app key", "text", st.key, "", ' autocomplete="off" spellcheck="false" placeholder="e.g. a1b2c3d4e5f6g7h"') + "</form>" +
+    '<details><summary>Where do I get an app key? (once, about 3 minutes)</summary><ol class="steps">' +
+    "<li>Open <b>dropbox.com/developers/apps</b> and click <b>Create app</b>.</li><li>Choose <b>Scoped access</b>, then <b>Full Dropbox</b>, name it e.g. <i>My Jobs sync</i>, and create it.</li>" +
+    "<li>On the <b>Permissions</b> tab tick <b>files.metadata.read</b>, <b>files.content.read</b> and <b>files.content.write</b>, then <b>Submit</b>.</li>" +
+    (st.canRedirect ? "<li>On the <b>Settings</b> tab, under <b>OAuth 2 › Redirect URIs</b>, add <code class=\"k\">" + esc(st.redirect) + "</code>.</li>" : "") +
+    "<li>Copy the <b>App key</b> from the Settings tab and paste it above.</li></ol></details>" +
+    '<div class="frow"><button class="btn ' + (st.folderOk ? "ghost" : "primary") + '" type="button" data-a="sync-auth">Sign in to Dropbox</button></div>' +
+    (!st.canRedirect ? '<form class="syncf" data-form="sync" onsubmit="return false">' + inp("sync", "code", "Code Dropbox shows after you allow access", "text", "", "", ' autocomplete="off" spellcheck="false"') + '</form><div class="frow"><button class="btn ghost" type="button" data-a="sync-code">Finish</button></div>' : "");
+  if (st.folderOk) {
+    h += '<section class="panel"><div class="muted">Keep My Jobs in a data file in your <b>Dropbox</b> folder. Every computer connected to it shows the same, up-to-date information. The Dropbox app carries the file between computers, and My Jobs checks it every few seconds.</div>' +
+      '<ol class="steps"><li><b>First computer:</b> Create the data point, and pick your <b>Dropbox</b> folder (or the <b>part time</b> folder inside it). It starts with what is on this computer now.</li>' +
+      "<li><b>Every other computer:</b> Connect to the data point, and pick the same folder. That computer then shows the shared data.</li></ol>" +
+      '<div class="muted">The data file is kept at ' + DPATH(st) + ".</div>" +
+      '<div class="frow"><button class="btn ghost" type="button" data-a="sync-pick" data-ask="connect">Connect to the data point</button><button class="btn primary" type="button" data-a="sync-pick" data-ask="create">Create the data point</button></div></section>' +
+      '<section class="panel"><details' + (SY.phone ? " open" : "") + ' data-a="sync-phone"><summary>On a phone or tablet, or another browser?</summary><div class="muted" style="margin:8px 0">Phones can\'t use the Dropbox folder. They can sign in to Dropbox instead and use the same data point. This needs a Dropbox app key, made once.</div>' + signIn + "</details></section>";
+  } else {
+    h += '<section class="panel"><div class="muted">This browser can\'t use the Dropbox folder (that needs <b>Chrome</b> or <b>Microsoft Edge</b> on a computer). Sign in to Dropbox instead to share the same data point as your computers. This needs a Dropbox app key, made once.</div>' + signIn + "</section>";
+  }
+  return h + "</div>";
+}
 function uninstallHtml() {
   var ua = navigator.userAgent, and = /Android/i.test(ua), ios = /iPhone|iPad|iPod/i.test(ua);
   var steps = and ? ["Go to your home screen and find the My Jobs icon.", "Press and hold it until a menu appears.", "Tap <b>Uninstall</b> (or <b>App info</b>, then <b>Uninstall</b>) and confirm."]
@@ -1339,14 +1716,14 @@ function uninstallHtml() {
 function importHtml() {
   var j = S.importArmed || {}, n = Object.keys((j.collections || {}).jobs || {}).length;
   return '<header class="dh"><h3>Import data</h3><button class="btn quiet" type="button" data-a="close-drawer" aria-label="Close">✕</button></header><div class="dbody">' +
-    '<section class="panel dangerzone"><div class="muted">This app already has ' + S.jobs.length + " jobs. Importing <b>replaces everything</b> in it with the file (" + n + " jobs on the main account" + (j.exportedAt ? ", exported " + esc(fd(j.exportedAt.slice(0, 10))) : "") + ").</div>" +
+    '<section class="panel dangerzone"><div class="muted">This app already has ' + S.jobs.length + " jobs. Importing <b>replaces everything</b> in it" + (dbxOn() ? " and on every device synced with Dropbox" : "") + " with the file (" + n + " jobs on the main account" + (j.exportedAt ? ", exported " + esc(fd(j.exportedAt.slice(0, 10))) : "") + ").</div>" +
     '<div class="frow"><button class="btn ghost" type="button" data-a="close-drawer">Cancel</button><button class="btn danger" type="button" data-a="import-confirm">Replace with the file</button></div></section></div>';
 }
 function renderDrawer() {
   var wrap = $("drawer-wrap"), j = S.openJob && S.jobs.filter(function (x) { return x.id === S.openJob; })[0];
-  if (S.modal === "uninstall" || S.modal === "import") {
+  if (S.modal === "uninstall" || S.modal === "import" || S.modal === "sync") {
     wrap.hidden = false; document.body.style.overflow = "hidden";
-    $("drawer").innerHTML = S.modal === "uninstall" ? uninstallHtml() : importHtml();
+    $("drawer").innerHTML = S.modal === "uninstall" ? uninstallHtml() : S.modal === "sync" ? syncHtml() : importHtml();
     return;
   }
   if (S.modal) {
@@ -1400,7 +1777,7 @@ function drawerHtml(j) {
   if (mins.length) h += '<div class="muted">' + mins.length + " meeting minute" + (mins.length > 1 ? "s" : "") + ' linked. <button class="btn quiet sm" type="button" data-a="nav" data-v="minutes">Open minutes</button></div>';
   h += "</section>";
   var key = "deljob-" + j.id;
-  h += '<div class="frow"><span class="msg">' + (SA ? "Deleting removes the job and its notes from this app." : "Deleting also removes its empty Dropbox folders. Folders with files are kept.") + '</span><button class="btn danger' + (S.arm === key ? " armed" : "") + '" type="button" data-a="del-job" data-id="' + esc(j.id) + '">' + (S.arm === key ? "Tap again to delete" : "Delete job") + "</button></div>";
+  h += '<div class="frow"><span class="msg">' + (offline() ? "Deleting removes the job and its notes from this app." : "Deleting also removes its empty Dropbox folders. Folders with files are kept.") + '</span><button class="btn danger' + (S.arm === key ? " armed" : "") + '" type="button" data-a="del-job" data-id="' + esc(j.id) + '">' + (S.arm === key ? "Tap again to delete" : "Delete job") + "</button></div>";
   return h + "</div>";
 }
 
@@ -1491,7 +1868,8 @@ function viewInvoices() {
       return '<div class="ln"><span class="jn"><b>' + esc(l.job) + "</b> <span>" + esc(clientOf(l.job)) + "</span></span><span>" + hr(l.hours) + "</span><span>" + rc + "</span><span>" + money(l.hours * l.rate) + "</span></div>";
     }).join("") + '<div class="ln tot"><span>Total</span><span>' + hr(d.unH) + "</span><span></span><span>" + money(d.due.amount) + "</span></div></div>";
     var no = S.invNo != null ? S.invNo : nextInvNo(), taken = invTaken(no), armed = S.arm === "dupinv-" + no;
-    h += '<div class="invgo"><span class="note">' + (SA ? "Saves the PDF to your Downloads folder and lists the invoice below as awaiting payment." :
+    h += '<div class="invgo"><span class="note">' + (offline() ? "Saves the PDF to your Downloads folder and lists the invoice below as awaiting payment." : SA ?
+      "Makes the folder <b>" + (+no > 0 ? esc(INV_DIR.replace("/part time/", "") + " / " + invFolderName(no)) : "INVOICES / …") + "</b> in Dropbox, saves the PDF into it, and lists the invoice below as awaiting payment." :
       "Makes the folder <b>" + (+no > 0 ? esc(INV_DIR.replace("/part time/", "") + " / " + invFolderName(no)) : "INVOICES / …") + "</b> in Dropbox, downloads the PDF for you to save into it, and lists the invoice below as awaiting payment." +
       '<br><span id="inv-dbx">' + (S.invFoldersBusy ? "Checking Dropbox for existing invoice numbers…" : S.invFolders ? "Last invoice folder in Dropbox: " + esc(S.invFolders.last || "none") + "." : S.invFoldersErr ? "Dropbox could not be checked, so duplicate numbers can't be spotted." : "") + "</span>") + "</span>" +
       '<label for="inv-no">Invoice no.</label><input class="field" id="inv-no" type="number" min="1" step="1" inputmode="numeric" value="' + esc(no) + '">' +
@@ -1789,7 +2167,7 @@ async function backup(auto) {
   if (bkBusy) return false;
   if (!S.db || !S.T0 || !S.jobs.length) { if (!auto) toast("Nothing to back up yet."); return false; }
   bkBusy = true; $("bk-btn").disabled = true;
-  if (SA) {
+  if (offline()) {
     try {
       var nowA = new Date(), fn = "My Jobs backup " + (PAGE.id === "kf" ? "" : safeName(PAGE.name) + " ") + todayIso() + ".xls";
       var dlA = await window.claude.use("downloads"); await dlA.save({ filename: fn, data: new TextEncoder().encode(buildWorkbook()) });
@@ -1889,7 +2267,7 @@ async function makeInvoice() {
   if (!(no > 0)) { toast("Enter an invoice number.", "err"); return; }
   if (invTaken(no) && !arm("dupinv-" + no)) return;
   S.arm = null;
-  var ds = invDateStr(new Date()), data, folder = invFolderName(no), madeFolder = false;
+  var ds = invDateStr(new Date()), data, folder = invFolderName(no), uploaded = false, madeFolder = false;
   try { data = buildInvoicePdf(due, no, ds); } catch (e) { toast("The PDF could not be built.", "err"); return; }
   var btn = $("make-inv"); if (btn) btn.disabled = true;
   try {
@@ -1899,8 +2277,12 @@ async function makeInvoice() {
   try {
     var dl = window.claude && window.claude.use ? await window.claude.use("downloads") : null;
     if (!dl) { toast("Saving files isn't available in this view.", "err"); return; }
-    if (madeFolder) toast("Folder ready: Dropbox / part time / INVOICES / " + folder + ". Save the PDF into it.", "ok", 15000);
-    await dl.save({ filename: "Invoice #" + no + " (" + ds + ").pdf", data: data });
+    if (SA && madeFolder && window.__dbxPdf) {
+      await window.__dbxPdf(INV_DIR + "/" + folder + "/Invoice #" + no + " (" + ds + ").pdf", data); uploaded = true;
+    } else {
+      if (madeFolder) toast("Folder ready: Dropbox / part time / INVOICES / " + folder + ". Save the PDF into it.", "ok", 15000);
+      await dl.save({ filename: "Invoice #" + no + " (" + ds + ").pdf", data: data });
+    }
   } catch (e) { toast("The PDF was not saved, so the invoice was not recorded." + (madeFolder ? " The empty Dropbox folder is still there." : ""), "err"); if (btn) btn.disabled = false; return; }
   /* Record it, and fix the punched entries into the time sheet so the invoiced range never shifts. */
   var rec = { sent: todayIso(), amount: due.amount, paid: false, fromRef: due.fromRef, toRef: due.toRef, no: no, rates: due.lines.reduce(function (o, l) { o[l.job] = l.rate; return o; }, {}) };
@@ -1911,7 +2293,7 @@ async function makeInvoice() {
   try {
     await saveMain(base);
     await savePunch({ list: [], active: S.P.active });
-    toast("Invoice #" + no + " created and listed as awaiting payment." + (madeFolder ? " Remember to put the PDF in " + folder + "." : ""), "ok", 12000);
+    toast("Invoice #" + no + " created and listed as awaiting payment." + (uploaded ? " The PDF is in Dropbox / INVOICES / " + folder + "." : madeFolder ? " Remember to put the PDF in " + folder + "." : ""), "ok", 12000);
   } catch (e) { toast("The PDF is saved, but the invoice could not be recorded.", "err"); }
   loadInvFolders(true);
 }
@@ -1944,6 +2326,34 @@ var A = {
       .then(function () { return db.doc("meta/pages").set({ list: list }); })
       .then(function () { toast("“" + pg.name + "” was deleted. Its backups, job folders and invoice folders are still in Dropbox.", "ok", 9000); }, function () { toast("Part of “" + pg.name + "” could not be deleted. Try again from its Account Details.", "err"); });
   },
+  "sync-open": function () {
+    S.appMenu = false; renderAppMenu();
+    if (window.__dbx && window.__dbx.state().status === "perm") { A["sync-reconnect"](); return; }
+    SY.err = ""; SY.probe = null; window.__dbxAuthError = ""; S.modal = "sync"; S.openJob = null; schedule();
+  },
+  "sync-reconnect": function () { window.__dbx.reconnect().then(function (ok) { if (ok) toast("Reconnected to Dropbox.", "ok"); schedule(); }, function (e) { SY.err = e.message; S.modal = "sync"; schedule(); }); },
+  "sync-pick": function (t) {
+    SY.ask = t.dataset.ask; SY.err = ""; SY.probe = null;
+    window.__dbx.pickFolder().then(function (pr) { SY.probe = pr; schedule(); }, function (e) { if (e && e.name === "AbortError") return; SY.err = e.message || "That folder could not be used."; schedule(); });
+  },
+  "sync-cancel": async function () { await window.__dbx.disconnect(); SY.probe = null; SY.err = ""; schedule(); },
+  "sync-phone": function (t, e) { setTimeout(function () { SY.phone = t.open; }, 0); },
+  "sync-auth": async function () {
+    var d = drafts.sync || {}, st = window.__dbx.state();
+    try { SY.err = ""; await window.__dbx.startAuth(d.key != null ? d.key : st.key); if (!st.canRedirect) toast("Allow access in the Dropbox tab, then paste the code here.", "ok", 10000); }
+    catch (e) { SY.err = e.message; } schedule();
+  },
+  "sync-code": async function () {
+    var d = drafts.sync || {}; SY.err = "";
+    try { await window.__dbx.finishAuth(d.code); delete d.code; SY.probe = null; toast("Signed in to Dropbox.", "ok"); } catch (e) { SY.err = e.message; } schedule();
+  },
+  "sync-retry": function () { SY.err = ""; SY.probe = null; schedule(); },
+  "sync-create": async function () { SY.busy = true; SY.err = ""; schedule(); try { await window.__dbx.create(); toast("Data point created. Now connect your other devices to it.", "ok", 9000); } catch (e) { SY.err = e.message || "It could not be created."; } SY.busy = false; S.invFolders = null; schedule(); },
+  "sync-merge": async function () { SY.busy = true; SY.err = ""; schedule(); try { await window.__dbx.connect("merge"); toast("Connected and merged with Dropbox.", "ok"); } catch (e) { SY.err = e.message || "It could not connect."; } SY.busy = false; S.invFolders = null; schedule(); },
+  "sync-use": async function () { SY.busy = true; SY.err = ""; schedule(); try { await window.__dbx.connect("replace"); toast("Connected. This device now shows the shared data.", "ok"); } catch (e) { SY.err = e.message || "It could not connect."; } SY.busy = false; S.invFolders = null; schedule(); },
+  "sync-now": async function () { SY.err = ""; try { await window.__dbx.syncNow(); } catch (e) {} schedule(); },
+  "sync-off": async function () { if (S.arm !== "sync-off") { S.arm = "sync-off"; schedule(); return; } S.arm = null; await window.__dbx.disconnect(); SY.probe = null; S.invFolders = null; toast("Disconnected. This device keeps its own copy.", "ok"); schedule(); },
+  "sync-signout": async function () { await window.__dbx.disconnect(); SY.probe = null; schedule(); },
   "app-menu": function () { S.appMenu = !S.appMenu; renderAppMenu(); },
   "export-data": function () { S.appMenu = false; renderAppMenu(); exportAll(); },
   "import-data": function () { S.appMenu = false; renderAppMenu(); $("import-pick").click(); },
@@ -2130,6 +2540,9 @@ document.addEventListener("click", function (e) {
   if (ctl && ctl !== t && t.contains(ctl)) return;
   var fn = A[t.dataset.a]; if (fn) fn(t, e);
 });
+window.addEventListener("dbx", function () { renderSyncBtn(); if (window.__dbxJustAuthed || window.__dbxAuthError) { window.__dbxJustAuthed = false; if (S.modal !== "sync") { S.modal = "sync"; S.openJob = null; } schedule(); } else if (S.modal === "sync" && !editing()) schedule(); });
+window.addEventListener("dbx-images", function () { bump(); schedule(); });
+if (SA) setTimeout(renderSyncBtn, 0);
 document.addEventListener("mousedown", function (e) { var b = e.target.closest && e.target.closest("[data-cmd]"); if (b) e.preventDefault(); });
 document.addEventListener("click", function (e) {
   var b = e.target.closest && e.target.closest("[data-cmd]"); if (!b) return;
